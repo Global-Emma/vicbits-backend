@@ -1,10 +1,15 @@
-const User = require('../models/User');
-const { generateAccessToken, generateRefreshToken } = require('../utils/tokenGenerator');
-const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
-const { invalidateCache } = require('../utils/validation');
+const User = require("../models/User");
+const {
+  generateAccessToken,
+  generateRefreshToken,
+  generateAndSaveOTP,
+} = require("../utils/tokenGenerator");
+const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
+const { invalidateCache } = require("../utils/validation");
+const Otp = require("../models/Otp");
 
 // Reusable Nodemailer Transporter
 const transporter = nodemailer.createTransport({
@@ -39,8 +44,25 @@ const sendOtp = async (req, res) => {
       });
     }
 
-    // Generate 6-digit numeric OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Call utility to generate the code and update the PostgreSQL database via Prisma
+    const otp = await generateAndSaveOTP(email);
+    if (!otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Failed to generate OTP code.",
+      });
+    }
+
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      if (process.env.NODE_ENV === "development") {
+        return res.status(200).json({
+          success: true,
+          message: "OTP generated for local development.",
+          devOtp: otp,
+        });
+      }
+      return res.status(503).json({ success: false, message: "Email delivery is not configured." });
+    }
 
     // Send email using Nodemailer
     const info = await transporter.sendMail({
@@ -80,7 +102,7 @@ const sendOtp = async (req, res) => {
       success: true,
       message: "OTP sent to registered email successfully.",
       // Pass code in development mode if configured
-      ...(process.env.NODE_ENV === 'development' && { devOtp: otp }),
+      ...(process.env.NODE_ENV === "development" && { devOtp: otp }),
     });
   } catch (error) {
     console.error("❌ Send OTP Error:", error);
@@ -95,29 +117,62 @@ const sendOtp = async (req, res) => {
 // ==========================================
 // 2. VERIFY OTP CODE
 // ==========================================
+
 const verifyOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
+    // 1. Validate required fields
     if (!email || !otp) {
       return res.status(400).json({
         success: false,
-        message: "Email and OTP code are required.",
+        message: "Email address and OTP code are required",
       });
     }
 
-    // In a production setup, verify against saved OTP in DB or Redis
-    // Example placeholder validation:
-    console.log(`OTP ${otp} verified for ${email}`);
+    // 2. Normalize inputs
+    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedOtp = String(otp).trim();
+
+    // 3. Find matching OTP record (MUST match BOTH email AND otpCode)
+    const otpRecord = await Otp.findOne({
+      email: normalizedEmail,
+      otpCode: normalizedOtp,
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or incorrect OTP code",
+      });
+    }
+
+    // 4. Check Expiration
+    if (new Date() > new Date(otpRecord.otpExpires)) {
+      // Delete expired OTP to keep DB clean
+      await Otp.deleteOne({ _id: otpRecord._id });
+
+      return res.status(400).json({
+        success: false,
+        message: "OTP code has expired. Please request a new code.",
+      });
+    }
+
+    // Keep a short-lived verification record for the registration request.
+    otpRecord.verifiedAt = new Date();
+    await otpRecord.save();
+
+    console.log(`✅ OTP verified successfully for ${normalizedEmail}`);
 
     return res.status(200).json({
       success: true,
       message: "OTP verified successfully",
     });
   } catch (error) {
+    console.error("❌ OTP Verification Error:", error.message);
     return res.status(500).json({
       success: false,
-      message: "Internal Server Error occurred during OTP verification.",
+      message: "An internal server error occurred during OTP verification.",
       error: error.message,
     });
   }
@@ -150,19 +205,31 @@ const registerUser = async (req, res) => {
     if (!firstName || !lastName || !email || !password || !dob) {
       return res.status(400).json({
         success: false,
-        message: "Please fill in all required fields (First Name, Last Name, Email, DOB, Password).",
+        message:
+          "Please fill in all required fields (First Name, Last Name, Email, DOB, Password).",
       });
     }
 
     if (!acceptedTerms) {
       return res.status(400).json({
         success: false,
-        message: "You must accept the Terms and Conditions to create an account.",
+        message:
+          "You must accept the Terms and Conditions to create an account.",
       });
     }
 
+    const normalizedEmail = email.toLowerCase().trim();
+    const verifiedOtp = await Otp.findOne({
+      email: normalizedEmail,
+      otpExpires: { $gt: new Date() },
+      verifiedAt: { $ne: null },
+    });
+    if (!verifiedOtp) {
+      return res.status(400).json({ success: false, message: 'Please verify your email before registering.' });
+    }
+
     // Check existing investor
-    const userExists = await User.findOne({ email });
+    const userExists = await User.findOne({ email: normalizedEmail });
     if (userExists) {
       return res.status(400).json({
         success: false,
@@ -174,7 +241,7 @@ const registerUser = async (req, res) => {
     const newUser = await User.create({
       firstName,
       lastName,
-      email,
+      email: normalizedEmail,
       phone,
       dob,
       country: country || "United States",
@@ -208,6 +275,7 @@ const registerUser = async (req, res) => {
     if (req.redisClient) {
       await invalidateCache(req.redisClient, `user:${newUser._id}`);
     }
+    await Otp.deleteOne({ _id: verifiedOtp._id });
 
     return res.status(201).json({
       success: true,
@@ -290,7 +358,9 @@ const loginUser = async (req, res) => {
 const getUserProfile = async (req, res) => {
   try {
     const cachedKey = `user:${req.user._id}`;
-    const cachedUser = req.redisClient ? await req.redisClient.get(cachedKey) : null;
+    const cachedUser = req.redisClient
+      ? await req.redisClient.get(cachedKey)
+      : null;
 
     if (cachedUser) {
       return res.status(200).json({
@@ -332,7 +402,9 @@ const getUserProfile = async (req, res) => {
 const getAllUsers = async (req, res) => {
   try {
     const cachedKey = `user:all`;
-    const cachedUsers = req.redisClient ? await req.redisClient.get(cachedKey) : null;
+    const cachedUsers = req.redisClient
+      ? await req.redisClient.get(cachedKey)
+      : null;
 
     if (cachedUsers) {
       return res.status(200).json({
@@ -527,7 +599,6 @@ const forgotPassword = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Password reset token sent to your email address.",
-      resetToken,
     });
   } catch (error) {
     console.error("Error in forgotPassword:", error);
@@ -554,10 +625,7 @@ const resetPassword = async (req, res) => {
       });
     }
 
-    const hashedToken = crypto
-      .createHash("sha256")
-      .update(token)
-      .digest("hex");
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
     const user = await User.findOne({
       resetPasswordToken: hashedToken,
@@ -579,7 +647,8 @@ const resetPassword = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "Password reset successful. You can now log in with your new password.",
+      message:
+        "Password reset successful. You can now log in with your new password.",
     });
   } catch (error) {
     console.error("Error in resetPassword:", error);
@@ -605,7 +674,10 @@ const refreshToken = async (req, res) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET);
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
+    );
 
     if (!decoded) {
       return res.status(401).json({

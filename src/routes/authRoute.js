@@ -16,7 +16,7 @@ const {
   editUserProfile,
 } = require('../controllers/authController');
 
-const { protect } = require('../middlewares/authMiddleware');
+const { protect, authorize } = require('../middlewares/authMiddleware');
 
 router.post('/send-otp', sendOtp);
 router.post('/verify-otp', verifyOtp);
@@ -24,7 +24,7 @@ router.post('/register', registerUser);
 router.post('/login', loginUser);
 
 router.get('/profile', protect, getUserProfile);
-router.get('/users', getAllUsers);
+router.get('/users', protect, authorize('admin'), getAllUsers);
 router.put('/change-password', protect, changePassword);
 router.put('/update-profile', protect, editUserProfile);
 

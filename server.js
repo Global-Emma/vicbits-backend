@@ -11,14 +11,11 @@ const connectDB = require('./src/config/db');
 
 // Route Imports
 const authRoutes = require('./src/routes/authRoute');
-const serviceRoutes = require('./src/routes/serviceRoute');
-const projectRoutes = require('./src/routes/projectRoute');
-const applicationRoutes = require('./src/routes/applicationRoute');
-const messageRoutes = require('./src/routes/messageRoute');
-const notificationRoutes = require('./src/routes/notificationRoute');
+const portalRoutes = require('./src/routes/portalRoute');
+const publicRoutes = require('./src/routes/publicRoute');
 
 // Sockets
-const initSocket = require('./src/sockets/chatSocket');
+// const initSocket = require('./src/sockets/chatSocket');
 
 const app = express();
 
@@ -83,7 +80,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(null, true); // Set to callback(new Error('Not allowed by CORS')) if strict domain locking is required
+        callback(new Error('Not allowed by CORS'));
       }
     },
     credentials: true,
@@ -111,11 +108,8 @@ app.use((req, res, next) => {
 // ==========================================
 
 app.use('/api/auth', authRoutes);
-app.use('/api/services', serviceRoutes);
-app.use('/api/projects', projectRoutes);
-app.use('/api/apply', applicationRoutes);
-app.use('/api/chat', messageRoutes);
-app.use('/api/notifications', notificationRoutes);
+app.use('/api/portal', portalRoutes);
+app.use('/api/public', publicRoutes);
 
 // Health Check Endpoint
 app.get('/health', (req, res) => {
@@ -143,7 +137,7 @@ app.use((err, req, res, next) => {
 const server = http.createServer(app);
 
 // Initialize Socket.io
-initSocket(server, redisClient);
+// initSocket(server, redisClient);
 
 const PORT = process.env.PORT || 3001;
 
@@ -162,8 +156,10 @@ const gracefulShutdown = (signal) => {
     console.log('HTTP server closed.');
 
     try {
-      await redisClient.quit();
-      console.log('Redis client disconnected.');
+      if (redisClient) {
+        await redisClient.quit();
+        console.log('Redis client disconnected.');
+      }
       process.exit(0);
     } catch (err) {
       console.error('Error during shutdown:', err);

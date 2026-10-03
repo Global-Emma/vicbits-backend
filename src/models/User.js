@@ -114,6 +114,21 @@ const userSchema = new mongoose.Schema(
     refreshToken: {
       type: String,
     },
+
+    // --- Montary & Investment Details ---
+    totalInvested: {
+      type: String,
+      default: '0',
+    },
+    totalReturns: {
+      type: String,
+      default: '0',
+    },
+    balance: {
+      type: String,
+      default: '0',
+    },
+    
   },
   {
     timestamps: true,
@@ -122,14 +137,14 @@ const userSchema = new mongoose.Schema(
 
 // --- Pre-save Hook: Hash Password ---
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password')) return next;
 
   try {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
-    next();
+    next;
   } catch (error) {
-    next(error);
+    throw new Error('Error hashing password: ' + error.message);
   }
 });
 
