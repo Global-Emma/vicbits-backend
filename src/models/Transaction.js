@@ -9,7 +9,7 @@ const transactionSchema = new mongoose.Schema(
     amount: { type: Number, required: true, min: 0 },
     type: { type: String, enum: ['Income', 'Expense', 'Transfer', 'Refund'], required: true },
     status: { type: String, enum: ['Completed', 'Pending', 'Failed'], default: 'Pending' },
-    eventType: { type: String, enum: ['deposit', 'withdrawal', 'investment'], required: true },
+    eventType: { type: String, enum: ['deposit', 'withdrawal', 'investment', 'adjustment'], required: true },
     paymentMethod: { type: String, default: 'Account balance' },
     fee: { type: Number, default: 0, min: 0 },
     senderRecipient: { type: String, default: '' },

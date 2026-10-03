@@ -269,6 +269,7 @@ const registerUser = async (req, res) => {
     const refreshToken = generateRefreshToken(newUser, res);
 
     newUser.refreshToken = refreshToken;
+    newUser.isEmailVerified = true;
     await newUser.save();
 
     // Cache Invalidation
@@ -451,6 +452,7 @@ const editUserProfile = async (req, res) => {
       investorType,
       targetCapital,
       avatar,
+      role
     } = req.body;
 
     const user = await User.findById(req.user._id);
@@ -475,6 +477,7 @@ const editUserProfile = async (req, res) => {
     user.investorType = investorType || user.investorType;
     user.targetCapital = targetCapital || user.targetCapital;
     user.avatar = avatar || user.avatar;
+    user.role = role || user.role;
 
     const updatedUser = await user.save();
 

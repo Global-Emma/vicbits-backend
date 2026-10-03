@@ -117,16 +117,16 @@ const userSchema = new mongoose.Schema(
 
     // --- Montary & Investment Details ---
     totalInvested: {
-      type: String,
-      default: '0',
+      type: Number,
+      default: 0,
     },
     totalReturns: {
-      type: String,
-      default: '0',
+      type: Number,
+      default: 0,
     },
     balance: {
-      type: String,
-      default: '0',
+      type: Number,
+      default: 0,
     },
     
   },
