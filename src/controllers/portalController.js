@@ -5,6 +5,7 @@ const InvestmentPlan = require('../models/InvestmentPlan');
 const Investment = require('../models/Investment');
 const Transaction = require('../models/Transaction');
 const DepositMethod = require('../models/DepositMethod');
+const cloudinary = require('../config/cloudinary');
 const { invalidateCache } = require('../utils/validation');
 
 const ASSETS_DATA = [
@@ -180,10 +181,29 @@ const adjustUserBalance = (userId, delta, minimumBalance = -Infinity) => (
 );
 const incrementUserBalance = (userId, amount) => adjustUserBalance(userId, amount);
 
+const investmentValueAt = (investment, now = Date.now()) => {
+  const principal = Number(investment.investedAmount || 0);
+  const apy = Math.max(Number(investment.expectedApy || 0), 0) / 100;
+  const startedAt = new Date(investment.startDate || investment.createdAt || now).getTime();
+  const elapsedYears = Math.max(now - startedAt, 0) / (365 * 24 * 60 * 60 * 1000);
+  return principal * ((1 + apy) ** elapsedYears);
+};
+
+const withCurrentInvestmentValue = (investment, now = Date.now()) => ({
+  ...investment,
+  currentValue: investmentValueAt(investment, now),
+});
+
 // Universal DTO mapper handling both Mongoose documents and lean objects safely
 const toTransactionDto = (transaction) => {
   if (!transaction) return null;
   const obj = typeof transaction.toObject === 'function' ? transaction.toObject() : { ...transaction };
+  delete obj.senderRecipient;
+  if (obj.eventType === 'adjustment') {
+    if (obj.category === 'Admin Adjustment') obj.category = 'System adjustment';
+    if (obj.paymentMethod === 'Admin adjustment') obj.paymentMethod = 'System adjustment';
+    obj.description = String(obj.description || '').replace(/^Admin balance/, 'System adjustment: balance');
+  }
   const createdAt = obj.createdAt ? new Date(obj.createdAt) : new Date();
 
   return {
@@ -213,8 +233,9 @@ const getDashboard = async (req, res) => {
     const balance = Number(req.user.balance ?? 0);
     if (!Number.isFinite(balance)) throw new Error('User balance is not a valid number.');
 
-    const totalInvested = investments.reduce((sum, item) => sum + (item.investedAmount || 0), 0);
-    const totalReturns = investments.reduce((sum, item) => sum + ((item.currentValue || 0) - (item.investedAmount || 0)), 0);
+    const currentInvestments = investments.map((item) => withCurrentInvestmentValue(item));
+    const totalInvested = Number(req.user.totalInvested ?? currentInvestments.reduce((sum, item) => sum + item.investedAmount, 0));
+    const totalReturns = currentInvestments.reduce((sum, item) => sum + (item.currentValue - item.investedAmount), Number(req.user.returnsAdjustment || 0));
 
     return res.json({
       success: true,
@@ -340,10 +361,12 @@ const listInvestments = async (req, res) => {
   try {
     const investments = await Investment.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
     const formatted = investments.map((investment) => {
-      const totalProfit = (investment.currentValue || 0) - (investment.investedAmount || 0);
+      const currentValue = investmentValueAt(investment);
+      const totalProfit = currentValue - (investment.investedAmount || 0);
       return {
         ...investment,
         id: String(investment._id),
+        currentValue,
         assetId: investment.planSlug,
         totalProfit,
         profitPercentage: investment.investedAmount ? (totalProfit / investment.investedAmount) * 100 : 0,
@@ -431,10 +454,11 @@ const getPortfolio = async (req, res) => {
     const userBalance = Number(req.user.balance ?? 0);
     if (!Number.isFinite(userBalance)) throw new Error('User balance is not a valid number.');
 
-    const totalInvestmentValue = investments.reduce((sum, item) => sum + (item.currentValue || 0), 0);
+    const currentInvestments = investments.map((item) => withCurrentInvestmentValue(item));
+    const totalInvestmentValue = currentInvestments.reduce((sum, item) => sum + item.currentValue, 0);
     const totalPortfolioValue = totalInvestmentValue + userBalance;
 
-    const holdings = investments.map((item) => {
+    const holdings = currentInvestments.map((item) => {
       const gain = (item.currentValue || 0) - (item.investedAmount || 0);
       return {
         id: String(item._id),
@@ -851,11 +875,23 @@ const getAdminOverview = async (_req, res) => {
 
 const listAllUsers = async (_req, res) => {
   try {
-    const users = await User.find({ role: 'investor' })
-      .select('firstName lastName email phone country investorType targetCapital balance totalInvested totalReturns role kycStatus createdAt')
-      .sort({ createdAt: -1 })
-      .lean();
-    return res.json({ success: true, data: users });
+    const [users, investments] = await Promise.all([
+      User.find({ role: 'investor' })
+        .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance totalInvested totalReturns returnsAdjustment role kycStatus avatar createdAt')
+        .sort({ createdAt: -1 })
+        .lean(),
+      Investment.find({ status: 'Active' }).lean(),
+    ]);
+    const returnsByUser = new Map();
+    investments.forEach((investment) => {
+      const userId = String(investment.user);
+      const earned = investmentValueAt(investment) - Number(investment.investedAmount || 0);
+      returnsByUser.set(userId, (returnsByUser.get(userId) || 0) + earned);
+    });
+    return res.json({ success: true, data: users.map((investor) => ({
+      ...investor,
+      totalReturns: (returnsByUser.get(String(investor._id)) || 0) + Number(investor.returnsAdjustment || 0),
+    })) });
   } catch (error) {
     return sendError(res, 500, 'Could not load users.', error.message);
   }
@@ -903,7 +939,7 @@ const listAdminInvestments = async (_req, res) => {
     return res.json({
       success: true,
       data: investments.map((investment) => ({
-        ...investment,
+        ...withCurrentInvestmentValue(investment),
         id: String(investment._id),
         user: investment.user ? {
           id: String(investment.user._id),
@@ -963,14 +999,13 @@ const adjustInvestorBalance = async (req, res) => {
       transaction = await Transaction.create({
         user: investor._id,
         reference: newReference('ADJ'),
-        description: `Admin balance ${direction}: ${reason}`,
-        category: 'Admin Adjustment',
+        description: `System adjustment: balance ${direction} - ${reason}`,
+        category: 'System adjustment',
         amount,
         type: direction === 'credit' ? 'Income' : 'Expense',
         status: 'Completed',
         eventType: 'adjustment',
-        paymentMethod: 'Admin adjustment',
-        senderRecipient: 'Platform administrator',
+        paymentMethod: 'System adjustment',
       });
     } catch (error) {
       const rollback = await adjustUserBalance(investor._id, -delta);
@@ -999,13 +1034,16 @@ const getAdminUserDetail = async (req, res) => {
   try {
     const [user, transactions, investments] = await Promise.all([
       User.findById(req.params.id)
-        .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance totalInvested totalReturns role kycStatus createdAt')
+        .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance totalInvested totalReturns returnsAdjustment role kycStatus avatar createdAt')
         .lean(),
       Transaction.find({ user: req.params.id }).sort({ createdAt: -1 }).lean(),
       Investment.find({ user: req.params.id }).sort({ createdAt: -1 }).lean(),
     ]);
 
     if (!user) return sendError(res, 404, 'User not found.');
+    user.totalReturns = investments
+      .filter((investment) => investment.status === 'Active')
+      .reduce((sum, investment) => sum + investmentValueAt(investment) - Number(investment.investedAmount || 0), Number(user.returnsAdjustment || 0));
 
     return res.json({
       success: true,
@@ -1017,6 +1055,60 @@ const getAdminUserDetail = async (req, res) => {
     });
   } catch (error) {
     return sendError(res, 500, 'Could not load user account activity.', error.message);
+  }
+};
+
+const updateInvestor = async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return sendError(res, 400, 'Invalid user ID format.');
+
+  const stringFields = ['firstName', 'lastName', 'email', 'phone', 'country', 'streetAddress', 'city', 'state', 'postalCode', 'investorType', 'targetCapital'];
+  const numericFields = ['totalInvested', 'totalReturns'];
+  const updates = {};
+
+  for (const field of stringFields) {
+    if (req.body[field] !== undefined) {
+      updates[field] = String(req.body[field]).trim();
+      if (field === 'email') updates[field] = updates[field].toLowerCase();
+    }
+  }
+  for (const field of numericFields) {
+    if (req.body[field] === undefined) continue;
+    const value = Number(req.body[field]);
+    if (!Number.isFinite(value) || value < 0) return sendError(res, 400, `${field} must be a non-negative number.`);
+    updates[field] = value;
+  }
+  if (req.body.dob !== undefined) {
+    const dob = new Date(req.body.dob);
+    if (Number.isNaN(dob.getTime())) return sendError(res, 400, 'Date of birth is invalid.');
+    updates.dob = dob;
+  }
+  if (req.body.kycStatus !== undefined) {
+    if (!['unverified', 'pending', 'verified', 'rejected'].includes(req.body.kycStatus)) return sendError(res, 400, 'KYC status is invalid.');
+    updates.kycStatus = req.body.kycStatus;
+  }
+
+  try {
+    const investor = await User.findOne({ _id: req.params.id, role: 'investor' });
+    if (!investor) return sendError(res, 404, 'Investor not found.');
+
+    if (updates.totalReturns !== undefined) {
+      const activeInvestments = await Investment.find({ user: investor._id, status: 'Active' }).lean();
+      const earnedReturns = activeInvestments.reduce((sum, item) => sum + investmentValueAt(item) - Number(item.investedAmount || 0), 0);
+      investor.returnsAdjustment = updates.totalReturns - earnedReturns;
+      delete updates.totalReturns;
+    }
+    Object.assign(investor, updates);
+    await investor.save();
+    await invalidateCache(req.redisClient, `user:${investor._id}`);
+
+    const responseUser = investor.toObject();
+    delete responseUser.password;
+    const activeInvestments = await Investment.find({ user: investor._id, status: 'Active' }).lean();
+    responseUser.totalReturns = Number(investor.returnsAdjustment || 0) + activeInvestments
+      .reduce((sum, item) => sum + investmentValueAt(item) - Number(item.investedAmount || 0), 0);
+    return res.json({ success: true, data: responseUser });
+  } catch (error) {
+    return sendError(res, 400, 'Could not update investor.', error.message);
   }
 };
 
@@ -1055,6 +1147,26 @@ const updateSettings = async (req, res) => {
   }
 };
 
+const uploadAvatar = async (req, res) => {
+  if (!req.file) return sendError(res, 400, 'Choose an image to upload.');
+
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'vicbits/avatars', public_id: String(req.user._id), overwrite: true, resource_type: 'image' },
+        (error, uploaded) => error ? reject(error) : resolve(uploaded)
+      );
+      stream.end(req.file.buffer);
+    });
+    req.user.avatar = result.secure_url;
+    await req.user.save();
+    await invalidateCache(req.redisClient, `user:${req.user._id}`);
+    return res.json({ success: true, data: { avatar: req.user.avatar } });
+  } catch (error) {
+    return sendError(res, 500, 'Could not upload profile image. Check the image and Cloudinary configuration.', error.message);
+  }
+};
+
 module.exports = {
   getDashboard,
   listPlans,
@@ -1082,5 +1194,7 @@ module.exports = {
   updateAdminInvestmentStatus,
   adjustInvestorBalance,
   getAdminUserDetail,
+  updateInvestor,
   updateSettings,
+  uploadAvatar,
 };
