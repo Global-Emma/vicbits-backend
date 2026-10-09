@@ -124,6 +124,11 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    settledInvestmentPayouts: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Investment' }],
+      default: [],
+      select: false,
+    },
     returnsAdjustment: {
       type: Number,
       default: 0,

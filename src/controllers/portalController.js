@@ -16,8 +16,11 @@ const ASSETS_DATA = [
     category: "crypto",
     price: 94500,
     change24h: 3.85,
-    expectedApy: 14.2,
+    yieldType: "weekly",
+    yieldPercent: 45,
+    payoutIntervalDays: 7,
     minInvestment: 50,
+    expectedReturns: 72.5,
     riskLevel: "Medium",
     badge: "Most Popular",
     description: "Institutional-grade cold storage Bitcoin liquidity pool with automated yield compounding.",
@@ -31,12 +34,15 @@ const ASSETS_DATA = [
     category: "realestate",
     price: 500,
     change24h: 0.82,
-    expectedApy: 11.5,
+    yieldType: "monthly",
+    yieldPercent: 52,
+    payoutIntervalDays: 30,
     minInvestment: 500,
+    expectedReturns: 760,
     riskLevel: "Low",
     badge: "High Yield",
-    description: "Fractional ownership in prime Dubai commercial real estate with quarterly dividend payouts.",
-    tags: ["Fractional Property", "Quarterly Dividends"],
+    description: "Fractional ownership in prime Dubai commercial real estate with regular dividend payouts.",
+    tags: ["Fractional Property", "Dividends"],
     active: true,
   },
   {
@@ -46,8 +52,11 @@ const ASSETS_DATA = [
     category: "gold",
     price: 2680,
     change24h: 1.15,
-    expectedApy: 8.4,
+    yieldType: "monthly",
+    yieldPercent: 40,
+    payoutIntervalDays: 30,
     minInvestment: 100,
+    expectedReturns: 140,
     riskLevel: "Low",
     badge: "Inflation Shield",
     description: "100% allocated physical gold stored in Zurich vaults, audited monthly with full redemption rights.",
@@ -61,9 +70,13 @@ const ASSETS_DATA = [
     category: "etfs",
     price: 512.4,
     change24h: -0.34,
-    expectedApy: 12.8,
+    yieldType: "weekly",
+    yieldPercent: 42,
+    payoutIntervalDays: 7,
     minInvestment: 100,
+    expectedReturns: 142,
     riskLevel: "Low",
+    badge: null,
     description: "Track the top 500 US public equities with low management fees and steady growth history.",
     tags: ["Index Fund", "US Equities"],
     active: true,
@@ -75,8 +88,11 @@ const ASSETS_DATA = [
     category: "crypto",
     price: 3450,
     change24h: 5.12,
-    expectedApy: 18.2,
+    yieldType: "weekly",
+    yieldPercent: 58,
+    payoutIntervalDays: 7,
     minInvestment: 100,
+    expectedReturns: 158,
     riskLevel: "Medium",
     badge: "Trending",
     description: "Liquidity-backed proof-of-stake node validation yielding direct protocol rewards.",
@@ -90,8 +106,11 @@ const ASSETS_DATA = [
     category: "nfts",
     price: 3800,
     change24h: 14.8,
-    expectedApy: 28.5,
+    yieldType: "weekly",
+    yieldPercent: 60,
+    payoutIntervalDays: 7,
     minInvestment: 3800,
+    expectedReturns: 6080,
     riskLevel: "High",
     badge: "Exclusive",
     description: "VIP Tier membership pass unlocking zero-fee trading, private ICO access, and revenue shares.",
@@ -105,9 +124,13 @@ const ASSETS_DATA = [
     category: "etfs",
     price: 210.15,
     change24h: 2.94,
-    expectedApy: 22.1,
+    yieldType: "monthly",
+    yieldPercent: 55,
+    payoutIntervalDays: 30,
     minInvestment: 100,
+    expectedReturns: 155,
     riskLevel: "High",
+    badge: null,
     description: "Diversified exposure to leading semi-conductor, AI software, and robotics companies worldwide.",
     tags: ["AI Technology", "High Growth"],
     active: true,
@@ -119,16 +142,54 @@ const ASSETS_DATA = [
     category: "realestate",
     price: 1000,
     change24h: 0.15,
-    expectedApy: 13.0,
+    yieldType: "monthly",
+    yieldPercent: 48,
+    payoutIntervalDays: 30,
     minInvestment: 1000,
+    expectedReturns: 1480,
     riskLevel: "Medium",
+    badge: null,
     description: "Equity stake in a 42-story office and retail complex in downtown Manhattan, New York.",
     tags: ["Commercial", "US Property"],
     active: true,
   },
+  {
+    name: "Solana High-Yield Liquidity Node",
+    slug: "sol-liquidity",
+    symbol: "SOL-NODE",
+    category: "crypto",
+    price: 210,
+    change24h: 8.45,
+    yieldType: "weekly",
+    yieldPercent: 50,
+    payoutIntervalDays: 7,
+    minInvestment: 200,
+    expectedReturns: 300,
+    riskLevel: "High",
+    badge: "New Release",
+    description: "DeFi liquidity provision on Solana DEX protocols with automated yield farming strategy.",
+    tags: ["Solana", "DeFi Yield"],
+    active: true,
+  },
+  {
+    name: "London Luxury Residential Equity",
+    slug: "london-property",
+    symbol: "LDN-PROP",
+    category: "realestate",
+    price: 2500,
+    change24h: 0.45,
+    yieldType: "monthly",
+    yieldPercent: 44,
+    payoutIntervalDays: 30,
+    minInvestment: 2500,
+    expectedReturns: 3600,
+    riskLevel: "Medium",
+    badge: "Stable Dividend",
+    description: "Prime Mayfair residential apartment refurbishment equity fund with asset-backed security.",
+    tags: ["London Equity", "Residential Property"],
+    active: true,
+  },
 ];
-
-
 
 // --- HELPER FUNCTIONS ---
 
@@ -181,18 +242,234 @@ const adjustUserBalance = (userId, delta, minimumBalance = -Infinity) => (
 );
 const incrementUserBalance = (userId, amount) => adjustUserBalance(userId, amount);
 
+const creditInvestmentPayoutOnce = async (userId, investmentId, amount) => {
+  const result = await User.collection.updateOne(
+    { _id: userId, settledInvestmentPayouts: { $ne: investmentId } },
+    {
+      $inc: { balance: amount },
+      $addToSet: { settledInvestmentPayouts: investmentId },
+    }
+  );
+  if (result.matchedCount === 1) return;
+
+  const user = await User.collection.findOne(
+    { _id: userId },
+    { projection: { settledInvestmentPayouts: 1 } }
+  );
+  if (!user) throw new Error(`Investor account for investment ${investmentId} was not found.`);
+  if (user.settledInvestmentPayouts?.some((id) => id.toString() === investmentId.toString())) return;
+  throw new Error(`Payout balance could not be updated for investment ${investmentId}.`);
+};
+
 const investmentValueAt = (investment, now = Date.now()) => {
   const principal = Number(investment.investedAmount || 0);
-  const apy = Math.max(Number(investment.expectedApy || 0), 0) / 100;
+  const payoutAmount = Number(investment.payoutAmount ?? principal);
+  const payoutDate = new Date(investment.payoutDate || investment.startDate || investment.createdAt || now).getTime();
   const startedAt = new Date(investment.startDate || investment.createdAt || now).getTime();
-  const elapsedYears = Math.max(now - startedAt, 0) / (365 * 24 * 60 * 60 * 1000);
-  return principal * ((1 + apy) ** elapsedYears);
+  const duration = Math.max(payoutDate - startedAt, 0);
+  const progress = duration ? Math.min(Math.max((now - startedAt) / duration, 0), 1) : 1;
+  return principal + (payoutAmount - principal) * progress;
 };
 
 const withCurrentInvestmentValue = (investment, now = Date.now()) => ({
   ...investment,
   currentValue: investmentValueAt(investment, now),
+  payoutAmount: Number(investment.payoutAmount ?? investment.investedAmount ?? 0),
+  totalProfit: investment.status === 'Active'
+    ? investmentValueAt(investment, now) - Number(investment.investedAmount || 0)
+    : Number(investment.realizedReturn ?? (
+      Number(investment.payoutAmount ?? investment.investedAmount ?? 0)
+        - Number(investment.investedAmount || 0)
+    )),
 });
+
+let payoutSettlementInProgress = false;
+
+const ensureActiveInvestmentTerms = async () => {
+  const legacyInvestments = await Investment.find({
+    status: { $in: ['Active', 'Matured'] },
+    paidOutAt: null,
+    $or: [
+      { payoutDate: { $exists: false } },
+      { payoutAmount: { $exists: false } },
+      { expectedReturns: { $exists: false } },
+      { yieldType: { $exists: false } },
+      { yieldPercent: { $exists: false } },
+    ],
+  }).select('_id plan planSlug investedAmount currentValue expectedApy expectedReturns yieldType yieldPercent startDate createdAt payoutDate payoutAmount').lean();
+
+  for (const investment of legacyInvestments) {
+    const plan = investment.plan
+      ? await InvestmentPlan.findById(investment.plan).lean()
+      : await InvestmentPlan.findOne({ slug: investment.planSlug }).lean();
+
+    const startDate = new Date(investment.startDate || investment.createdAt || Date.now());
+    const configuredPayoutDate = plan?.payoutDate ? new Date(plan.payoutDate) : null;
+    const payoutDate = configuredPayoutDate && configuredPayoutDate > startDate
+      ? configuredPayoutDate
+      : investment.payoutDate || new Date(
+        startDate.getTime() + Number(plan?.payoutIntervalDays || (investment.yieldType === 'weekly' ? 7 : 30)) * 24 * 60 * 60 * 1000
+      );
+    const minimumInvestment = Number(plan?.minInvestment || 0);
+    const payoutMultiple = minimumInvestment > 0
+      ? Number(plan.expectedReturns) > 0
+        ? Number(plan.expectedReturns) / minimumInvestment
+        : 1 + Number(plan.yieldPercent || 0) / 100
+      : 1 + Number(investment.yieldPercent ?? plan?.yieldPercent ?? investment.expectedApy ?? 0) / 100;
+    const calculatedPlanPayout = Number((Number(investment.investedAmount || 0) * payoutMultiple).toFixed(2));
+    const fallbackPayoutAmount = investment.expectedReturns
+      ?? (plan
+        ? calculatedPlanPayout
+        : Number(investment.currentValue) > Number(investment.investedAmount)
+          ? investment.currentValue
+          : calculatedPlanPayout);
+    const payoutAmount = investment.payoutAmount ?? fallbackPayoutAmount;
+    const yieldType = investment.yieldType || plan?.yieldType || 'monthly';
+    const yieldPercent = investment.yieldPercent ?? plan?.yieldPercent ?? investment.expectedApy ?? (
+      Number(investment.investedAmount) > 0
+        ? ((Number(payoutAmount) / Number(investment.investedAmount)) - 1) * 100
+        : 0
+    );
+    const updates = {};
+    if (!investment.payoutDate) updates.payoutDate = payoutDate;
+    if (investment.payoutAmount === undefined || investment.payoutAmount === null) updates.payoutAmount = payoutAmount;
+    updates.expectedReturns = payoutAmount;
+    updates.yieldType = yieldType;
+    updates.yieldPercent = yieldPercent;
+
+    await Investment.updateOne(
+      { _id: investment._id, status: { $in: ['Active', 'Matured'] }, paidOutAt: null },
+      { $set: updates },
+      { runValidators: true }
+    );
+  }
+};
+
+const settleDueInvestments = async (redisClient = null) => {
+  if (payoutSettlementInProgress) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    return settleDueInvestments(redisClient);
+  }
+  payoutSettlementInProgress = true;
+  try {
+    await ensureActiveInvestmentTerms();
+    const now = new Date();
+    const staleProcessingBefore = new Date(now.getTime() - 5 * 60 * 1000);
+    const dueInvestments = await Investment.find({
+      status: 'Active',
+      payoutDate: { $lte: now },
+      paidOutAt: null,
+    }).select('_id user investedAmount expectedReturns payoutAmount name symbol planSlug status').lean();
+    const incompletePayouts = await Investment.find({
+      status: 'Matured',
+      paidOutAt: null,
+      $or: [
+        { payoutProcessingAt: { $exists: false } },
+        { payoutProcessingAt: null },
+        { payoutProcessingAt: { $lt: staleProcessingBefore } },
+      ],
+    }).select('_id user investedAmount expectedReturns payoutAmount name symbol planSlug status').lean();
+
+    for (const due of [...dueInvestments, ...incompletePayouts]) {
+      const principal = Number(due.investedAmount || 0);
+      const payoutAmount = Number(due.payoutAmount ?? principal);
+      const realizedReturn = payoutAmount - principal;
+      const processingToken = crypto.randomBytes(16).toString('hex');
+      const claimFilter = due.status === 'Matured'
+        ? {
+          _id: due._id,
+          status: 'Matured',
+          paidOutAt: null,
+          $or: [
+            { payoutProcessingAt: { $exists: false } },
+            { payoutProcessingAt: null },
+            { payoutProcessingAt: { $lt: staleProcessingBefore } },
+          ],
+        }
+        : {
+          _id: due._id,
+          status: 'Active',
+          payoutDate: { $lte: now },
+          paidOutAt: null,
+        };
+      const claimed = await Investment.findOneAndUpdate(
+        claimFilter,
+        {
+          $set: {
+            status: 'Matured',
+            currentValue: payoutAmount,
+            realizedReturn,
+            payoutProcessingAt: new Date(),
+            payoutProcessingToken: processingToken,
+          },
+        },
+        { returnDocument: 'after' }
+      );
+      if (!claimed) continue;
+
+      try {
+        await creditInvestmentPayoutOnce(due.user, due._id, payoutAmount);
+        const reference = `PAY-${due._id}`;
+        const existingTransaction = await Transaction.findOne({ reference }).lean();
+        if (existingTransaction) {
+          if (
+            existingTransaction.user.toString() !== due.user.toString()
+            || Number(existingTransaction.amount) !== payoutAmount
+            || existingTransaction.category !== 'Investment Payout'
+          ) {
+            throw new Error(`Payout transaction reference conflicts with investment ${due._id}.`);
+          }
+        } else {
+          await Transaction.create({
+            user: due.user,
+            reference,
+            description: `Payout for ${due.name}: ${principal.toFixed(2)} capital + ${realizedReturn.toFixed(2)} returns`,
+            category: 'Investment Payout',
+            amount: payoutAmount,
+            type: 'Income',
+            status: 'Completed',
+            eventType: 'investment',
+            planSlug: due.planSlug,
+            senderRecipient: due.name,
+          });
+        }
+        const payoutUpdate = await Investment.updateOne(
+          {
+            _id: due._id,
+            status: 'Matured',
+            paidOutAt: null,
+            payoutProcessingToken: processingToken,
+          },
+          {
+            $set: { paidOutAt: new Date() },
+            $unset: { payoutProcessingAt: '', payoutProcessingToken: '' },
+          }
+        );
+        if (payoutUpdate.matchedCount !== 1) {
+          throw new Error(`Payout completion could not be recorded for investment ${due._id}.`);
+        }
+        await invalidateCache(redisClient, `user:${due.user}`);
+      } catch (error) {
+        await Investment.updateOne(
+          { _id: due._id, status: 'Matured', paidOutAt: null, payoutProcessingToken: processingToken },
+          { $unset: { payoutProcessingAt: '', payoutProcessingToken: '' } }
+        );
+        throw error;
+      }
+    }
+  } finally {
+    payoutSettlementInProgress = false;
+  }
+};
+
+const calculateInvestorReturns = (investments, returnsAdjustment = 0) => (
+  investments.reduce((sum, investment) => {
+    if (investment.status === 'Active') {
+      return sum + investmentValueAt(investment) - Number(investment.investedAmount || 0);
+    }
+    return sum + Number(investment.realizedReturn || 0);
+  }, Number(returnsAdjustment || 0))
+);
 
 // Universal DTO mapper handling both Mongoose documents and lean objects safely
 const toTransactionDto = (transaction) => {
@@ -225,17 +502,20 @@ const toTransactionDto = (transaction) => {
 
 const getDashboard = async (req, res) => {
   try {
+    await settleDueInvestments(req.redisClient);
     const [investments, transactions] = await Promise.all([
-      Investment.find({ user: req.user._id, status: 'Active' }).sort({ createdAt: -1 }).lean(),
+      Investment.find({ user: req.user._id }).sort({ createdAt: -1 }).lean(),
       Transaction.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(6).lean(),
     ]);
 
-    const balance = Number(req.user.balance ?? 0);
+    const freshUser = await User.findById(req.user._id).select('balance totalInvested returnsAdjustment').lean();
+    if (!freshUser) return sendError(res, 404, 'Investor account not found.');
+    const balance = Number(freshUser.balance ?? 0);
     if (!Number.isFinite(balance)) throw new Error('User balance is not a valid number.');
 
-    const currentInvestments = investments.map((item) => withCurrentInvestmentValue(item));
-    const totalInvested = Number(req.user.totalInvested ?? currentInvestments.reduce((sum, item) => sum + item.investedAmount, 0));
-    const totalReturns = currentInvestments.reduce((sum, item) => sum + (item.currentValue - item.investedAmount), Number(req.user.returnsAdjustment || 0));
+    const activeInvestments = investments.filter((item) => item.status === 'Active');
+    const totalInvested = activeInvestments.reduce((sum, item) => sum + Number(item.investedAmount || 0), 0);
+    const totalReturns = calculateInvestorReturns(investments, Number(freshUser.returnsAdjustment || 0));
 
     return res.json({
       success: true,
@@ -243,8 +523,8 @@ const getDashboard = async (req, res) => {
         balance,
         totalInvested,
         totalReturns,
-        activeInvestments: investments.length,
-        activePlans: [...new Set(investments.map((item) => item.planSlug))],
+        activeInvestments: activeInvestments.length,
+        activePlans: [...new Set(activeInvestments.map((item) => item.planSlug))],
         recentTransactions: transactions.map(toTransactionDto),
       },
     });
@@ -279,13 +559,29 @@ const seedInvestmentPlans = async (req, res) => {
   }
 };
 
+
 const createPlan = async (req, res) => {
   try {
-    const { name, slug, symbol, category, price, change24h, expectedApy, minInvestment, riskLevel, badge, description, tags, active } = req.body;
+    const {
+      name, slug, symbol, category, price, change24h, yieldType, yieldPercent,
+      payoutIntervalDays, payoutDate, minInvestment, riskLevel, badge, description, tags, active,
+    } = req.body;
 
-    if (!name || !slug || !symbol || !category || minInvestment === undefined || !description) {
+    if (!name || !slug || !symbol || !category || minInvestment === undefined || yieldPercent === undefined || !yieldType || !description) {
       return sendError(res, 400, 'Please provide all required investment plan fields.');
     }
+
+    const minimum = Number(minInvestment);
+    const yieldRate = Number(yieldPercent);
+    const payoutDays = Number(payoutIntervalDays ?? 30);
+    const planPrice = Number(price ?? 0);
+    const dailyChange = Number(change24h ?? 0);
+    if (!Number.isFinite(minimum) || minimum <= 0 || !Number.isFinite(yieldRate) || yieldRate < 0 ||
+        !Number.isFinite(payoutDays) || payoutDays < 1 || !Number.isFinite(planPrice) || planPrice < 0 ||
+        !Number.isFinite(dailyChange)) {
+      return sendError(res, 400, 'Plan amounts, yield, and payout interval must be valid non-negative values.');
+    }
+    if (!['weekly', 'monthly'].includes(yieldType)) return sendError(res, 400, 'Yield type must be weekly or monthly.');
 
     const cleanSlug = String(slug).toLowerCase().trim();
     const existingPlan = await InvestmentPlan.findOne({ slug: cleanSlug }).lean();
@@ -294,18 +590,27 @@ const createPlan = async (req, res) => {
       return sendError(res, 400, `An investment plan with slug '${cleanSlug}' already exists.`);
     }
 
+    const payoutDateValue = payoutDate ? new Date(payoutDate) : null;
+    if (payoutDateValue && Number.isNaN(payoutDateValue.getTime())) {
+      return sendError(res, 400, 'The plan payout date is invalid.');
+    }
+
     const newPlan = await InvestmentPlan.create({
       name: String(name).trim(),
       slug: cleanSlug,
       symbol: String(symbol).trim().toUpperCase(),
       category: String(category).toLowerCase().trim(),
-      price: Number(price) || 0,
-      change24h: Number(change24h) || 0,
-      expectedApy: Number(expectedApy) || 0,
-      minInvestment: Number(minInvestment),
+      price: planPrice,
+      change24h: dailyChange,
+      yieldType,
+      yieldPercent: yieldRate,
+      payoutIntervalDays: payoutDays,
+      payoutDate: payoutDateValue,
+      minInvestment: minimum,
+      expectedReturns: Number((minimum * (1 + yieldRate / 100)).toFixed(2)),
       riskLevel,
-      badge,
-      description,
+      badge: badge || null,
+      description: String(description).trim(),
       tags: Array.isArray(tags) ? tags : [],
       active: active !== undefined ? Boolean(active) : true,
     });
@@ -331,11 +636,52 @@ const updatePlan = async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) return sendError(res, 400, 'Invalid plan ID format.');
 
   try {
-    const plan = await InvestmentPlan.findByIdAndUpdate(req.params.id, req.body, {
-      returnDocument: 'after',
-      runValidators: true,
-    });
+    const plan = await InvestmentPlan.findById(req.params.id);
     if (!plan) return sendError(res, 404, 'Investment plan not found.');
+
+    const allowedFields = [
+      'name', 'slug', 'symbol', 'category', 'price', 'change24h', 'yieldType',
+      'yieldPercent', 'payoutIntervalDays', 'payoutDate', 'minInvestment',
+      'riskLevel', 'badge', 'description', 'tags', 'active',
+    ];
+    const update = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) update[field] = req.body[field];
+    }
+
+    for (const field of ['price', 'yieldPercent', 'payoutIntervalDays', 'minInvestment', 'change24h']) {
+      if (update[field] === undefined) continue;
+      const value = Number(update[field]);
+      if (!Number.isFinite(value) || (field !== 'change24h' && value < 0) || (field === 'payoutIntervalDays' && value < 1) || (field === 'minInvestment' && value <= 0)) {
+        return sendError(res, 400, `${field} must be a valid ${field === 'payoutIntervalDays' ? 'positive' : 'non-negative'} number.`);
+      }
+      update[field] = value;
+    }
+    if (update.payoutDate !== undefined) {
+      if (update.payoutDate === null || update.payoutDate === '') update.payoutDate = null;
+      else {
+        const payoutDateValue = new Date(update.payoutDate);
+        if (Number.isNaN(payoutDateValue.getTime())) return sendError(res, 400, 'The plan payout date is invalid.');
+        update.payoutDate = payoutDateValue;
+      }
+    }
+    if (update.tags !== undefined && !Array.isArray(update.tags)) return sendError(res, 400, 'Plan tags must be an array.');
+
+    const nextMinimum = update.minInvestment ?? plan.minInvestment;
+    const nextYieldPercent = update.yieldPercent ?? plan.yieldPercent;
+    if (req.body.expectedReturns !== undefined && update.yieldPercent === undefined && update.minInvestment === undefined) {
+      const expectedPayout = Number(req.body.expectedReturns);
+      if (!Number.isFinite(expectedPayout) || expectedPayout < nextMinimum) {
+        return sendError(res, 400, 'Expected payout must be at least the plan minimum investment.');
+      }
+      update.yieldPercent = ((expectedPayout / nextMinimum) - 1) * 100;
+    }
+    const finalYieldPercent = update.yieldPercent ?? nextYieldPercent;
+    const finalMinimum = update.minInvestment ?? nextMinimum;
+    update.expectedReturns = Number((finalMinimum * (1 + finalYieldPercent / 100)).toFixed(2));
+
+    Object.assign(plan, update);
+    await plan.save();
     return res.json({ success: true, data: plan });
   } catch (error) {
     if (error.code === 11000) return sendError(res, 400, 'Plan slug or symbol must be unique.');
@@ -359,9 +705,11 @@ const deletePlan = async (req, res) => {
 
 const listInvestments = async (req, res) => {
   try {
+    await settleDueInvestments(req.redisClient);
     const investments = await Investment.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
     const formatted = investments.map((investment) => {
-      const currentValue = investmentValueAt(investment);
+      const payoutTarget = Number(investment.payoutAmount ?? investment.investedAmount ?? 0);
+      const currentValue = investment.status === 'Matured' ? payoutTarget : investmentValueAt(investment);
       const totalProfit = currentValue - (investment.investedAmount || 0);
       return {
         ...investment,
@@ -370,8 +718,9 @@ const listInvestments = async (req, res) => {
         assetId: investment.planSlug,
         totalProfit,
         profitPercentage: investment.investedAmount ? (totalProfit / investment.investedAmount) * 100 : 0,
-        nextPayoutDate: '',
-        payoutAmount: '',
+        nextPayoutDate: investment.payoutDate ? new Date(investment.payoutDate).toISOString().slice(0, 10) : '',
+        expectedReturns: payoutTarget,
+        payoutAmount: payoutTarget,
       };
     });
     return res.json({ success: true, data: formatted });
@@ -385,6 +734,7 @@ const createInvestment = async (req, res) => {
   if (!Number.isFinite(amount) || amount <= 0) return sendError(res, 400, 'Investment amount must be greater than zero.');
 
   try {
+    await settleDueInvestments(req.redisClient);
     const planQuery = { active: true };
     if (req.body.planId && mongoose.isValidObjectId(req.body.planId)) {
       planQuery._id = req.body.planId;
@@ -398,12 +748,27 @@ const createInvestment = async (req, res) => {
     if (!plan) return sendError(res, 404, 'Investment plan not found or is currently inactive.');
     if (amount < plan.minInvestment) return sendError(res, 400, `Minimum investment for this plan is $${plan.minInvestment}.`);
 
+    const now = new Date();
+    const configuredPayoutDate = plan.payoutDate ? new Date(plan.payoutDate) : null;
+    const payoutDate = configuredPayoutDate && configuredPayoutDate > now
+      ? configuredPayoutDate
+      : new Date(now.getTime() + Number(plan.payoutIntervalDays || 30) * 24 * 60 * 60 * 1000);
+    const minimumInvestment = Number(plan.minInvestment);
+    const payoutMultiple = minimumInvestment > 0
+      ? Number(plan.expectedReturns || minimumInvestment) / minimumInvestment
+      : 1 + Number(plan.yieldPercent || 0) / 100;
+    const payoutAmount = Number((amount * payoutMultiple).toFixed(2));
+    if (!Number.isFinite(payoutAmount) || payoutAmount < amount) {
+      return sendError(res, 400, 'The plan payout configuration is invalid.');
+    }
+
     const deduction = await adjustUserBalance(req.user._id, -amount, 0);
     if (deduction.insufficientBalance) return sendError(res, 400, 'Insufficient available balance.');
     if (deduction.matchedCount !== 1) return sendError(res, 404, 'Investor account not found.');
 
     let createdInvestment;
     let createdTransaction;
+    let totalsUpdated = false;
 
     try {
       createdInvestment = await Investment.create({
@@ -415,7 +780,12 @@ const createInvestment = async (req, res) => {
         category: plan.category,
         investedAmount: amount,
         currentValue: amount,
-        expectedApy: plan.expectedApy,
+        yieldType: plan.yieldType,
+        yieldPercent: plan.yieldPercent,
+        expectedReturns: payoutAmount,
+        payoutDate,
+        payoutAmount,
+        realizedReturn: 0,
       });
 
       createdTransaction = await Transaction.create({
@@ -433,13 +803,19 @@ const createInvestment = async (req, res) => {
 
       const totalsUpdate = await adjustUserNumericField(req.user._id, 'totalInvested', amount);
       if (totalsUpdate.matchedCount !== 1) throw new Error('Investor account was not found.');
+      totalsUpdated = true;
       await invalidateCache(req.redisClient, `user:${req.user._id}`);
 
       return res.status(201).json({ success: true, data: createdInvestment });
     } catch (error) {
-      // Clean rollback if investment creation fails
       if (createdTransaction) await Transaction.deleteOne({ _id: createdTransaction._id });
       if (createdInvestment) await Investment.deleteOne({ _id: createdInvestment._id });
+      if (totalsUpdated) {
+        const totalsRollback = await adjustUserNumericField(req.user._id, 'totalInvested', -amount, 0);
+        if (totalsRollback.matchedCount !== 1) {
+          throw new Error('Investment creation failed and the invested-total rollback also failed.');
+        }
+      }
       await incrementUserBalance(req.user._id, amount);
       throw error;
     }
@@ -450,11 +826,15 @@ const createInvestment = async (req, res) => {
 
 const getPortfolio = async (req, res) => {
   try {
-    const investments = await Investment.find({ user: req.user._id, status: 'Active' }).sort({ createdAt: -1 }).lean();
-    const userBalance = Number(req.user.balance ?? 0);
+    await settleDueInvestments(req.redisClient);
+    const investments = await Investment.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
+    const freshUser = await User.findById(req.user._id).select('balance totalInvested returnsAdjustment').lean();
+    if (!freshUser) return sendError(res, 404, 'Investor account not found.');
+    const userBalance = Number(freshUser.balance ?? 0);
     if (!Number.isFinite(userBalance)) throw new Error('User balance is not a valid number.');
 
-    const currentInvestments = investments.map((item) => withCurrentInvestmentValue(item));
+    const activeInvestments = investments.filter((item) => item.status === 'Active');
+    const currentInvestments = activeInvestments.map((item) => withCurrentInvestmentValue(item));
     const totalInvestmentValue = currentInvestments.reduce((sum, item) => sum + item.currentValue, 0);
     const totalPortfolioValue = totalInvestmentValue + userBalance;
 
@@ -465,10 +845,17 @@ const getPortfolio = async (req, res) => {
         name: item.name,
         symbol: item.symbol,
         category: item.category,
+        investedAmount: item.investedAmount,
+        currentValue: item.currentValue,
         unitsHeld: item.investedAmount,
         avgBuyPrice: 1,
         currentPrice: item.investedAmount ? item.currentValue / item.investedAmount : 0,
         totalValue: item.currentValue,
+        payoutAmount: item.payoutAmount,
+        payoutDate: item.payoutDate,
+        yieldType: item.yieldType,
+        yieldPercent: item.yieldPercent,
+        status: item.status,
         unrealizedProfit: gain,
         profitPercentage: item.investedAmount ? (gain / item.investedAmount) * 100 : 0,
         change24h: 0,
@@ -482,10 +869,13 @@ const getPortfolio = async (req, res) => {
         name: 'Available Cash Balance',
         symbol: 'USD',
         category: 'cash',
+        investedAmount: userBalance,
+        currentValue: userBalance,
         unitsHeld: userBalance,
         avgBuyPrice: 1,
         currentPrice: 1,
         totalValue: userBalance,
+        status: 'Available',
         unrealizedProfit: 0,
         profitPercentage: 0,
         change24h: 0,
@@ -497,7 +887,13 @@ const getPortfolio = async (req, res) => {
 
     return res.json({
       success: true,
-      data: { holdings, activities: transactions.map(toTransactionDto), totalValue: totalPortfolioValue },
+      data: {
+        holdings,
+        activities: transactions.map(toTransactionDto),
+        totalValue: totalPortfolioValue,
+        totalInvested: Number(freshUser.totalInvested || 0),
+        totalReturns: calculateInvestorReturns(investments, Number(freshUser.returnsAdjustment || 0)),
+      },
     });
   } catch (error) {
     return sendError(res, 500, 'Could not load portfolio.', error.message);
@@ -680,6 +1076,7 @@ const createDeposit = async (req, res) => {
 
 const listWithdrawals = async (req, res) => {
   try {
+    await settleDueInvestments(req.redisClient);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const [withdrawals, usage] = await Promise.all([
       Transaction.find({ user: req.user._id, eventType: 'withdrawal' }).sort({ createdAt: -1 }).lean(),
@@ -723,6 +1120,7 @@ const createWithdrawal = async (req, res) => {
   if (fee >= amount) return sendError(res, 400, 'Withdrawal amount must be greater than the processing fee.');
 
   try {
+    await settleDueInvestments(req.redisClient);
     const dayStart = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const usedToday = await Transaction.aggregate([
       {
@@ -880,17 +1278,21 @@ const listAllUsers = async (_req, res) => {
         .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance totalInvested totalReturns returnsAdjustment role kycStatus avatar createdAt')
         .sort({ createdAt: -1 })
         .lean(),
-      Investment.find({ status: 'Active' }).lean(),
+      Investment.find().lean(),
     ]);
-    const returnsByUser = new Map();
+    const investmentsByUser = new Map();
     investments.forEach((investment) => {
       const userId = String(investment.user);
-      const earned = investmentValueAt(investment) - Number(investment.investedAmount || 0);
-      returnsByUser.set(userId, (returnsByUser.get(userId) || 0) + earned);
+      const investorInvestments = investmentsByUser.get(userId) || [];
+      investorInvestments.push(investment);
+      investmentsByUser.set(userId, investorInvestments);
     });
     return res.json({ success: true, data: users.map((investor) => ({
       ...investor,
-      totalReturns: (returnsByUser.get(String(investor._id)) || 0) + Number(investor.returnsAdjustment || 0),
+      totalReturns: calculateInvestorReturns(
+        investmentsByUser.get(String(investor._id)) || [],
+        Number(investor.returnsAdjustment || 0)
+      ),
     })) });
   } catch (error) {
     return sendError(res, 500, 'Could not load users.', error.message);
@@ -956,18 +1358,62 @@ const listAdminInvestments = async (_req, res) => {
 const updateAdminInvestmentStatus = async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) return sendError(res, 400, 'Invalid investment ID format.');
 
-  const { status } = req.body;
-  if (!['Active', 'Matured', 'Locked'].includes(status)) {
+  const { status, payoutDate, expectedReturns, payoutAmount } = req.body;
+  const allowedStatuses = ['Active', 'Matured', 'Locked'];
+  if (status !== undefined && !allowedStatuses.includes(status)) {
     return sendError(res, 400, 'Investment status must be Active, Matured, or Locked.');
   }
 
   try {
+    const existingInvestment = await Investment.findById(req.params.id).lean();
+    if (!existingInvestment) return sendError(res, 404, 'Investment not found.');
+    if (existingInvestment.status === 'Matured') {
+      if (existingInvestment.paidOutAt && status === 'Matured' && payoutDate === undefined && expectedReturns === undefined && payoutAmount === undefined) {
+        return res.json({ success: true, data: existingInvestment });
+      }
+      return sendError(res, 400, 'Matured investments cannot be reopened or have their payout terms changed.');
+    }
+    if (payoutDate !== undefined && existingInvestment.status !== 'Active') {
+      return sendError(res, 400, 'Only active investments can have their payout date changed.');
+    }
+
+    const updates = {};
+    if (status !== undefined) updates.status = status;
+    if (payoutDate !== undefined && payoutDate !== null && payoutDate !== '') {
+      const parsedDate = new Date(payoutDate);
+      if (Number.isNaN(parsedDate.getTime())) return sendError(res, 400, 'The payout date is invalid.');
+      updates.payoutDate = parsedDate;
+    }
+    if (expectedReturns !== undefined || payoutAmount !== undefined) {
+      const nextPayout = Number(payoutAmount ?? expectedReturns);
+      if (!Number.isFinite(nextPayout) || nextPayout < Number(existingInvestment.investedAmount || 0)) {
+        return sendError(res, 400, 'Payout amount must be a valid amount no less than the invested capital.');
+      }
+      updates.expectedReturns = nextPayout;
+      updates.payoutAmount = nextPayout;
+      updates.realizedReturn = nextPayout - Number(existingInvestment.investedAmount || 0);
+    }
+
+    if (status === 'Matured') {
+      updates.status = 'Active';
+      updates.payoutDate = new Date();
+    }
+
     const investment = await Investment.findByIdAndUpdate(
       req.params.id,
-      { $set: { status } },
+      { $set: updates },
       { returnDocument: 'after', runValidators: true }
     );
     if (!investment) return sendError(res, 404, 'Investment not found.');
+    if (status === 'Matured') {
+      await settleDueInvestments(req.redisClient);
+      const settledInvestment = await Investment.findById(req.params.id).lean();
+      if (!settledInvestment?.paidOutAt) {
+        return sendError(res, 500, 'Investment payout could not be completed.');
+      }
+      await invalidateCache(req.redisClient, `user:${settledInvestment.user}`);
+      return res.json({ success: true, data: settledInvestment });
+    }
     await invalidateCache(req.redisClient, `user:${investment.user}`);
     return res.json({ success: true, data: investment });
   } catch (error) {
@@ -1041,9 +1487,7 @@ const getAdminUserDetail = async (req, res) => {
     ]);
 
     if (!user) return sendError(res, 404, 'User not found.');
-    user.totalReturns = investments
-      .filter((investment) => investment.status === 'Active')
-      .reduce((sum, investment) => sum + investmentValueAt(investment) - Number(investment.investedAmount || 0), Number(user.returnsAdjustment || 0));
+    user.totalReturns = calculateInvestorReturns(investments, Number(user.returnsAdjustment || 0));
 
     return res.json({
       success: true,
@@ -1092,8 +1536,8 @@ const updateInvestor = async (req, res) => {
     if (!investor) return sendError(res, 404, 'Investor not found.');
 
     if (updates.totalReturns !== undefined) {
-      const activeInvestments = await Investment.find({ user: investor._id, status: 'Active' }).lean();
-      const earnedReturns = activeInvestments.reduce((sum, item) => sum + investmentValueAt(item) - Number(item.investedAmount || 0), 0);
+      const activeInvestments = await Investment.find({ user: investor._id }).lean();
+      const earnedReturns = calculateInvestorReturns(activeInvestments, 0);
       investor.returnsAdjustment = updates.totalReturns - earnedReturns;
       delete updates.totalReturns;
     }
@@ -1103,9 +1547,8 @@ const updateInvestor = async (req, res) => {
 
     const responseUser = investor.toObject();
     delete responseUser.password;
-    const activeInvestments = await Investment.find({ user: investor._id, status: 'Active' }).lean();
-    responseUser.totalReturns = Number(investor.returnsAdjustment || 0) + activeInvestments
-      .reduce((sum, item) => sum + investmentValueAt(item) - Number(item.investedAmount || 0), 0);
+    const investments = await Investment.find({ user: investor._id }).lean();
+    responseUser.totalReturns = calculateInvestorReturns(investments, Number(investor.returnsAdjustment || 0));
     return res.json({ success: true, data: responseUser });
   } catch (error) {
     return sendError(res, 400, 'Could not update investor.', error.message);
@@ -1169,6 +1612,7 @@ const uploadAvatar = async (req, res) => {
 
 module.exports = {
   getDashboard,
+  settleDueInvestments,
   listPlans,
   seedInvestmentPlans,
   createPlan,

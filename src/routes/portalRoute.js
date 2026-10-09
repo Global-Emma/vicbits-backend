@@ -17,7 +17,7 @@ router.use(protect);
 router.get('/dashboard', portal.getDashboard);
 router.get('/plans', portal.listPlans);
 router.post('/plans', authorize('admin'), portal.createPlan);
-router.post('/plans', authorize('admin'), portal.seedInvestmentPlans);
+router.post('/plans/seed', authorize('admin'), portal.seedInvestmentPlans);
 router.put('/plans/:id', authorize('admin'), portal.updatePlan);
 router.delete('/plans/:id', authorize('admin'), portal.deletePlan);
 

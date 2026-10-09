@@ -8,6 +8,7 @@ const Redis = require('ioredis');
 
 // Database Connection
 const connectDB = require('./src/config/db');
+const { settleDueInvestments } = require('./src/controllers/portalController');
 
 // Route Imports
 const authRoutes = require('./src/routes/authRoute');
@@ -23,8 +24,17 @@ const app = express();
 // 1. DATABASE & REDIS SETUP
 // ==========================================
 
-// Connect to MongoDB
-connectDB();
+// Connect to MongoDB and settle matured positions on a regular schedule.
+let payoutSettlementTimer;
+connectDB().then(() => {
+  const settlePayouts = () => settleDueInvestments(redisClient).catch((error) => {
+    console.error('Investment payout settlement failed:', error);
+  });
+  void settlePayouts();
+  payoutSettlementTimer = setInterval(settlePayouts, 60 * 1000);
+}).catch((error) => {
+  console.error('Could not start investment payout settlement:', error);
+});
 
 // Initialize Redis Client with graceful fallback for local/dev environments.
 // A broken or unreachable Redis connection should not block the API from starting.
@@ -151,6 +161,7 @@ server.listen(PORT, () => {
 
 const gracefulShutdown = (signal) => {
   console.log(`\n⚠️  ${signal} received. Closing HTTP server and connections...`);
+  if (payoutSettlementTimer) clearInterval(payoutSettlementTimer);
 
   server.close(async () => {
     console.log('HTTP server closed.');
