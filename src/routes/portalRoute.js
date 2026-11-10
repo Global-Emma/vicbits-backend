@@ -23,6 +23,7 @@ router.delete('/plans/:id', authorize('admin'), portal.deletePlan);
 
 router.get('/investments', portal.listInvestments);
 router.post('/investments', portal.createInvestment);
+router.get('/referrals', portal.getReferrals);
 router.get('/portfolio', portal.getPortfolio);
 router.get('/transactions', portal.listTransactions);
 

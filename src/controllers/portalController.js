@@ -793,6 +793,70 @@ const listInvestments = async (req, res) => {
   }
 };
 
+const getReferrals = async (req, res) => {
+  try {
+    const referrer = await User.findById(req.user._id).select('rewardedReferralUsers').lean();
+    if (!referrer) return sendError(res, 404, 'Investor account not found.');
+
+    const referrals = await User.find({ referredBy: req.user._id })
+      .select('firstName lastName email createdAt')
+      .sort({ createdAt: -1 })
+      .lean();
+    const referralIds = referrals.map((referral) => referral._id);
+    const [investmentTotals, rewardableReferralIds] = await Promise.all([
+      referralIds.length
+        ? Investment.aggregate([
+          { $match: { user: { $in: referralIds } } },
+          {
+            $group: {
+              _id: '$user',
+              investmentCount: { $sum: 1 },
+              totalInvested: { $sum: '$investedAmount' },
+              firstInvestmentAt: { $min: '$createdAt' },
+            },
+          },
+        ])
+        : Promise.resolve([]),
+      Promise.resolve(new Set(
+        (referrer.rewardedReferralUsers || []).map((userId) => userId.toString())
+      )),
+    ]);
+
+    const investmentByUser = new Map(
+      investmentTotals.map((item) => [item._id.toString(), item])
+    );
+    const data = referrals.map((referral) => {
+      const investment = investmentByUser.get(referral._id.toString());
+      const rewardEarned = rewardableReferralIds.has(referral._id.toString());
+      return {
+        id: referral._id.toString(),
+        firstName: referral.firstName,
+        lastName: referral.lastName,
+        email: referral.email,
+        registeredAt: referral.createdAt,
+        hasInvested: Boolean(investment),
+        investmentCount: investment?.investmentCount || 0,
+        totalInvested: investment?.totalInvested || 0,
+        firstInvestmentAt: investment?.firstInvestmentAt || null,
+        rewardEarned,
+        rewardAmount: rewardEarned ? 20 : 0,
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        referrals: data,
+        totalReferrals: data.length,
+        investedReferrals: data.filter((referral) => referral.hasInvested).length,
+        totalEarned: data.reduce((sum, referral) => sum + referral.rewardAmount, 0),
+      },
+    });
+  } catch (error) {
+    return sendError(res, 500, 'Could not load referral activity.', error.message);
+  }
+};
+
 const createInvestment = async (req, res) => {
   const amount = Number(req.body.amount);
   if (!Number.isFinite(amount) || amount <= 0) return sendError(res, 400, 'Investment amount must be greater than zero.');
@@ -1695,6 +1759,7 @@ module.exports = {
   updatePlan,
   deletePlan,
   listInvestments,
+  getReferrals,
   createInvestment,
   getPortfolio,
   listTransactions,
