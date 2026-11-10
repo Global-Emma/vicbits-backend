@@ -100,9 +100,22 @@ const userSchema = new mongoose.Schema(
     },
 
     // --- Referrals & System ---
-    referralCode: {
+    inviteCode: {
       type: String,
       trim: true,
+      uppercase: true,
+      unique: true,
+      sparse: true,
+    },
+    referredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    rewardedReferralUsers: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+      default: [],
+      select: false,
     },
     avatar: {
       type: String,
@@ -145,16 +158,11 @@ const userSchema = new mongoose.Schema(
 );
 
 // --- Pre-save Hook: Hash Password ---
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next;
+userSchema.pre('save', async function () {
+  if (!this.isModified('password')) return;
 
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next;
-  } catch (error) {
-    throw new Error('Error hashing password: ' + error.message);
-  }
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
 // --- Method: Compare Password ---

@@ -7,6 +7,7 @@ const Transaction = require('../models/Transaction');
 const DepositMethod = require('../models/DepositMethod');
 const cloudinary = require('../config/cloudinary');
 const { invalidateCache } = require('../utils/validation');
+const { getOrCreateInviteCode } = require('../utils/referrals');
 
 const ASSETS_DATA = [
   {
@@ -241,6 +242,67 @@ const adjustUserBalance = (userId, delta, minimumBalance = -Infinity) => (
   adjustUserNumericField(userId, 'balance', delta, minimumBalance)
 );
 const incrementUserBalance = (userId, amount) => adjustUserBalance(userId, amount);
+
+const creditReferralRewardForInvestment = async (investorId, redisClient) => {
+  const referredInvestor = await User.findById(investorId).select('referredBy').lean();
+  if (!referredInvestor?.referredBy) return;
+
+  const referrer = await User.findById(referredInvestor.referredBy).select('_id').lean();
+  if (!referrer) throw new Error('The referring investor account could not be found.');
+
+  const reference = `REF-${investorId}`;
+  const rewardTransaction = await Transaction.findOneAndUpdate(
+    { reference },
+    {
+      $setOnInsert: {
+        user: referrer._id,
+        reference,
+        description: "Referral reward for a friend's first investment",
+        category: 'Referral reward',
+        amount: 20,
+        type: 'Income',
+        status: 'Pending',
+        eventType: 'adjustment',
+        paymentMethod: 'Referral program',
+        senderRecipient: String(investorId),
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+  if (
+    rewardTransaction.user.toString() !== referrer._id.toString()
+    || Number(rewardTransaction.amount) !== 20
+    || rewardTransaction.category !== 'Referral reward'
+  ) {
+    throw new Error(`Referral reward reference conflicts with investor ${investorId}.`);
+  }
+
+  const credit = await User.collection.updateOne(
+    { _id: referrer._id, rewardedReferralUsers: { $ne: referredInvestor._id } },
+    {
+      $inc: { balance: 20 },
+      $addToSet: { rewardedReferralUsers: referredInvestor._id },
+    }
+  );
+
+  if (credit.matchedCount !== 1) {
+    const referrerState = await User.collection.findOne(
+      { _id: referrer._id },
+      { projection: { rewardedReferralUsers: 1 } }
+    );
+    if (!referrerState) throw new Error('The referring investor account could not be found.');
+    const rewardAlreadyCredited = referrerState.rewardedReferralUsers?.some(
+      (userId) => userId.toString() === referredInvestor._id.toString()
+    );
+    if (!rewardAlreadyCredited) throw new Error('The referral reward could not be credited.');
+  }
+
+  await Transaction.updateOne(
+    { _id: rewardTransaction._id },
+    { $set: { status: 'Completed' } }
+  );
+  await invalidateCache(redisClient, `user:${referrer._id}`);
+};
 
 const creditInvestmentPayoutOnce = async (userId, investmentId, amount) => {
   const result = await User.collection.updateOne(
@@ -510,6 +572,7 @@ const getDashboard = async (req, res) => {
 
     const freshUser = await User.findById(req.user._id).select('balance totalInvested returnsAdjustment').lean();
     if (!freshUser) return sendError(res, 404, 'Investor account not found.');
+    const inviteCode = await getOrCreateInviteCode(req.user._id);
     const balance = Number(freshUser.balance ?? 0);
     if (!Number.isFinite(balance)) throw new Error('User balance is not a valid number.');
 
@@ -521,6 +584,7 @@ const getDashboard = async (req, res) => {
       success: true,
       data: {
         balance,
+        inviteCode,
         totalInvested,
         totalReturns,
         activeInvestments: activeInvestments.length,
@@ -804,9 +868,6 @@ const createInvestment = async (req, res) => {
       const totalsUpdate = await adjustUserNumericField(req.user._id, 'totalInvested', amount);
       if (totalsUpdate.matchedCount !== 1) throw new Error('Investor account was not found.');
       totalsUpdated = true;
-      await invalidateCache(req.redisClient, `user:${req.user._id}`);
-
-      return res.status(201).json({ success: true, data: createdInvestment });
     } catch (error) {
       if (createdTransaction) await Transaction.deleteOne({ _id: createdTransaction._id });
       if (createdInvestment) await Investment.deleteOne({ _id: createdInvestment._id });
@@ -819,6 +880,21 @@ const createInvestment = async (req, res) => {
       await incrementUserBalance(req.user._id, amount);
       throw error;
     }
+
+    let referralRewardPending = false;
+    try {
+      await creditReferralRewardForInvestment(req.user._id, req.redisClient);
+    } catch (error) {
+      referralRewardPending = true;
+      console.error('Referral reward could not be completed after investment:', error);
+    }
+    await invalidateCache(req.redisClient, `user:${req.user._id}`);
+
+    return res.status(201).json({
+      success: true,
+      data: createdInvestment,
+      ...(referralRewardPending && { referralRewardStatus: 'pending' }),
+    });
   } catch (error) {
     return sendError(res, 500, 'Could not create investment.', error.message);
   }

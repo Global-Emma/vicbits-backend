@@ -10,16 +10,17 @@ const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const { invalidateCache } = require("../utils/validation");
 const Otp = require("../models/Otp");
+const { createInviteCode } = require("../utils/referrals");
 
 // Reusable Nodemailer Transporter
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: 465, // true for 465, false for other ports
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: 465, // true for 465, false for other ports
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
 });
 
 // const transporter = nodemailer.createTransport({
@@ -75,7 +76,9 @@ const sendOtp = async (req, res) => {
           devOtp: otp,
         });
       }
-      return res.status(503).json({ success: false, message: "Email delivery is not configured." });
+      return res
+        .status(503)
+        .json({ success: false, message: "Email delivery is not configured." });
     }
 
     // Send email using Nodemailer
@@ -239,7 +242,12 @@ const registerUser = async (req, res) => {
       verifiedAt: { $ne: null },
     });
     if (!verifiedOtp) {
-      return res.status(400).json({ success: false, message: 'Please verify your email before registering.' });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Please verify your email before registering.",
+        });
     }
 
     // Check existing investor
@@ -251,31 +259,49 @@ const registerUser = async (req, res) => {
       });
     }
 
+    const normalizedReferralCode = String(referralCode || "").trim().toUpperCase();
+    let referrer = null;
+    if (normalizedReferralCode) {
+      referrer = await User.findOne({ inviteCode: normalizedReferralCode }).select("_id");
+      if (!referrer) {
+        return res.status(400).json({
+          success: false,
+          message: "That referral code is invalid. Check the code with your friend and try again.",
+        });
+      }
+    }
+
     // Create User (Password will be automatically hashed by Mongoose schema pre-save hook)
-    const newUser = await User.create({
-      firstName,
-      lastName,
-      email: normalizedEmail,
-      phone,
-      dob,
-      country: country || "United States",
-      streetAddress,
-      city,
-      state,
-      postalCode,
-      investorType: investorType || "Individual Investor",
-      targetCapital: targetCapital || "$10,000 - $50,000",
-      password,
-      referralCode,
-      acceptedTerms,
-      isEmailVerified: true,
-    });
+    let newUser;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        newUser = await User.create({
+          firstName,
+          lastName,
+          email: normalizedEmail,
+          phone,
+          dob,
+          country: country || "United States",
+          streetAddress,
+          city,
+          state,
+          postalCode,
+          investorType: investorType || "Individual Investor",
+          targetCapital: targetCapital || "$10,000 - $50,000",
+          password,
+          inviteCode: createInviteCode(),
+          referredBy: referrer?._id || null,
+          acceptedTerms,
+          isEmailVerified: true,
+        });
+        break;
+      } catch (error) {
+        if (error.code !== 11000 || !error.keyPattern?.inviteCode) throw error;
+      }
+    }
 
     if (!newUser) {
-      return res.status(400).json({
-        success: false,
-        message: "Error creating investor account.",
-      });
+      throw new Error("Could not generate a unique referral code.");
     }
 
     // Generate JWT Tokens
@@ -466,7 +492,7 @@ const editUserProfile = async (req, res) => {
       investorType,
       targetCapital,
       avatar,
-      role
+      role,
     } = req.body;
 
     const user = await User.findById(req.user._id);
