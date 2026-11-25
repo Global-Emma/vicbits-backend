@@ -204,6 +204,8 @@ const sendError = (res, status, message, error = null) => {
 
 const newReference = (prefix) => `${prefix}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
 
+const getWithdrawalLimit = (user) => (user?.kycStatus === 'verified' ? 50000 : 10000);
+
 const adjustUserNumericField = async (userId, field, delta, minimumValue = -Infinity) => {
   if (!Number.isFinite(delta) || Number.isNaN(minimumValue)) {
     throw new Error('Balance adjustment values must be valid numbers.');
@@ -1233,11 +1235,13 @@ const listWithdrawals = async (req, res) => {
       ]),
     ]);
 
+    const dailyLimit = getWithdrawalLimit(req.user);
     return res.json({
       success: true,
       data: {
         withdrawals: withdrawals.map(toTransactionDto),
         dailyLimitUsed: usage[0]?.amount || 0,
+        dailyLimit,
       },
     });
   } catch (error) {
@@ -1274,7 +1278,7 @@ const createWithdrawal = async (req, res) => {
       { $group: { _id: null, amount: { $sum: '$amount' } } },
     ]);
 
-    const dailyLimit = req.user.withdrawalLimit || 10000;
+    const dailyLimit = getWithdrawalLimit(req.user);
     if ((usedToday[0]?.amount || 0) + amount > dailyLimit) {
       return sendError(res, 400, 'This request exceeds your rolling 24-hour withdrawal limit.');
     }
