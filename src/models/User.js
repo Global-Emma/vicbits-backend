@@ -150,6 +150,11 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    withdrawalLimit: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
     
   },
   {

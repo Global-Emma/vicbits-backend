@@ -7,35 +7,10 @@ const {
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
+const { transporter, sendAccountNotification } = require("../utils/mailer");
 const { invalidateCache } = require("../utils/validation");
 const Otp = require("../models/Otp");
 const { createInviteCode } = require("../utils/referrals");
-
-// Reusable Nodemailer Transporter
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: 465, // true for 465, false for other ports
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-// const transporter = nodemailer.createTransport({
-//   host: "smtp.gmail.com",
-//   port: 587,
-//   secure: false,
-//   auth: {
-//     user: process.env.EMAIL_USER,
-//     pass: process.env.EMAIL_PASS,
-//   },
-//   family: 4,
-//   connectionTimeout: 10000,
-//   greetingTimeout: 5000,
-//   socketTimeout: 10000,
-// });
 
 // ==========================================
 // 1. SEND OTP FOR EMAIL VERIFICATION
@@ -318,6 +293,12 @@ const registerUser = async (req, res) => {
     }
     await Otp.deleteOne({ _id: verifiedOtp._id });
 
+    await sendAccountNotification(newUser, {
+      subject: "Welcome to VicBits Capitals",
+      heading: "Your investor account is ready",
+      message: "Your VicBits Capitals account has been created successfully. You can now securely manage your investments from your investor dashboard.",
+    });
+
     return res.status(201).json({
       success: true,
       message: "Investor account created successfully.",
@@ -492,7 +473,6 @@ const editUserProfile = async (req, res) => {
       investorType,
       targetCapital,
       avatar,
-      role,
     } = req.body;
 
     const user = await User.findById(req.user._id);
@@ -517,7 +497,6 @@ const editUserProfile = async (req, res) => {
     user.investorType = investorType || user.investorType;
     user.targetCapital = targetCapital || user.targetCapital;
     user.avatar = avatar || user.avatar;
-    user.role = role || user.role;
 
     const updatedUser = await user.save();
 
@@ -556,6 +535,12 @@ const changePassword = async (req, res) => {
     }
 
     const user = await User.findById(req.user._id).select("+password");
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User account not found.",
+      });
+    }
 
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
@@ -571,6 +556,12 @@ const changePassword = async (req, res) => {
     if (req.redisClient) {
       await invalidateCache(req.redisClient, `user:${user._id}`);
     }
+
+    await sendAccountNotification(user, {
+      subject: "Your VicBits Capitals password was changed",
+      heading: "Password changed successfully",
+      message: "Your account password was changed. If you did not make this change, contact VicBits Capitals Support immediately.",
+    });
 
     return res.status(200).json({
       success: true,
@@ -687,6 +678,12 @@ const resetPassword = async (req, res) => {
     user.resetPasswordExpire = undefined;
 
     await user.save();
+
+    await sendAccountNotification(user, {
+      subject: "Your VicBits Capitals password was reset",
+      heading: "Password reset successfully",
+      message: "Your account password was reset. If you did not make this change, contact VicBits Capitals Support immediately.",
+    });
 
     return res.status(200).json({
       success: true,

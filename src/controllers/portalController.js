@@ -8,6 +8,7 @@ const DepositMethod = require('../models/DepositMethod');
 const cloudinary = require('../config/cloudinary');
 const { invalidateCache } = require('../utils/validation');
 const { getOrCreateInviteCode } = require('../utils/referrals');
+const { sendAccountNotification } = require('../utils/mailer');
 
 const ASSETS_DATA = [
   {
@@ -204,7 +205,13 @@ const sendError = (res, status, message, error = null) => {
 
 const newReference = (prefix) => `${prefix}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
 
-const getWithdrawalLimit = (user) => (user?.kycStatus === 'verified' ? 50000 : 10000);
+const getWithdrawalLimit = (user) => {
+  if (user?.withdrawalLimit !== null && user?.withdrawalLimit !== undefined) {
+    const configuredLimit = Number(user.withdrawalLimit);
+    if (Number.isFinite(configuredLimit) && configuredLimit >= 0) return configuredLimit;
+  }
+  return user?.kycStatus === 'verified' ? 50000 : 10000;
+};
 
 const adjustUserNumericField = async (userId, field, delta, minimumValue = -Infinity) => {
   if (!Number.isFinite(delta) || Number.isNaN(minimumValue)) {
@@ -513,6 +520,27 @@ const settleDueInvestments = async (redisClient = null) => {
           throw new Error(`Payout completion could not be recorded for investment ${due._id}.`);
         }
         await invalidateCache(redisClient, `user:${due.user}`);
+        try {
+          const payoutUser = await User.findById(due.user).select('firstName email').lean();
+          if (payoutUser) {
+            await sendAccountNotification(payoutUser, {
+              subject: 'Your investment payout is complete',
+              heading: 'Investment payout credited',
+              message: `Your payout for ${due.name} has been credited to your account balance.`,
+              details: [
+                { label: 'Investment', value: due.name },
+                { label: 'Capital', value: `$${principal.toFixed(2)}` },
+                { label: 'Returns', value: `$${realizedReturn.toFixed(2)}` },
+                { label: 'Payout', value: `$${payoutAmount.toFixed(2)}` },
+                { label: 'Reference', value: reference },
+              ],
+            });
+          } else {
+            console.error(`Could not send investment payout email: user ${due.user} was not found.`);
+          }
+        } catch (error) {
+          console.error(`Could not prepare investment payout email for ${due._id}:`, error);
+        }
       } catch (error) {
         await Investment.updateOne(
           { _id: due._id, status: 'Matured', paidOutAt: null, payoutProcessingToken: processingToken },
@@ -955,6 +983,18 @@ const createInvestment = async (req, res) => {
       console.error('Referral reward could not be completed after investment:', error);
     }
     await invalidateCache(req.redisClient, `user:${req.user._id}`);
+    await sendAccountNotification(req.user, {
+      subject: 'Investment placed successfully',
+      heading: 'Your investment is confirmed',
+      message: `Your investment in ${plan.name} was placed successfully.`,
+      details: [
+        { label: 'Investment', value: plan.name },
+        { label: 'Amount invested', value: `$${amount.toFixed(2)}` },
+        { label: 'Expected payout', value: `$${payoutAmount.toFixed(2)}` },
+        { label: 'Payout date', value: payoutDate.toLocaleDateString('en-US') },
+        { label: 'Reference', value: createdTransaction.reference },
+      ],
+    });
 
     return res.status(201).json({
       success: true,
@@ -1208,6 +1248,17 @@ const createDeposit = async (req, res) => {
       externalReference: txHash,
     });
 
+    await sendAccountNotification(req.user, {
+      subject: 'Deposit request received',
+      heading: 'We received your deposit request',
+      message: 'Your deposit request is pending verification. We will email you again when it has been reviewed.',
+      details: [
+        { label: 'Amount', value: `$${amount.toFixed(2)}` },
+        { label: 'Asset', value: asset },
+        { label: 'Reference', value: deposit.reference },
+      ],
+    });
+
     return res.status(201).json({ success: true, data: toTransactionDto(deposit) });
   } catch (error) {
     return sendError(res, 500, 'Could not submit deposit request.', error.message);
@@ -1304,6 +1355,17 @@ const createWithdrawal = async (req, res) => {
       });
 
       await invalidateCache(req.redisClient, `user:${req.user._id}`);
+      await sendAccountNotification(req.user, {
+        subject: 'Withdrawal request received',
+        heading: 'We received your withdrawal request',
+        message: 'Your withdrawal request is pending review. We will email you when it has been approved or declined.',
+        details: [
+          { label: 'Amount', value: `$${amount.toFixed(2)}` },
+          { label: 'Processing fee', value: `$${fee.toFixed(2)}` },
+          { label: 'Payout method', value: method },
+          { label: 'Reference', value: withdrawal.reference },
+        ],
+      });
       return res.status(201).json({ success: true, data: toTransactionDto(withdrawal) });
     } catch (error) {
       // Revert user balance on creation failure
@@ -1366,6 +1428,33 @@ const reviewTransaction = async (req, res) => {
     }
 
     await invalidateCache(req.redisClient, `user:${transaction.user}`);
+    try {
+      const account = await User.findById(transaction.user).select('firstName email').lean();
+      const action = nextStatus === 'Completed' ? 'completed successfully' : 'was not approved';
+      const eventLabel = transaction.eventType === 'deposit' ? 'deposit' : 'withdrawal';
+      const details = [
+        { label: 'Amount', value: `$${Number(transaction.amount).toFixed(2)}` },
+        { label: 'Reference', value: transaction.reference },
+      ];
+      if (transaction.eventType === 'deposit') {
+        details.push({ label: 'Asset', value: transaction.asset || transaction.senderRecipient || '—' });
+      } else {
+        details.push({ label: 'Processing fee', value: `$${Number(transaction.fee || 0).toFixed(2)}` });
+        details.push({ label: 'Payout method', value: transaction.paymentMethod || '—' });
+      }
+      if (account) {
+        await sendAccountNotification(account, {
+          subject: `Your ${eventLabel} ${nextStatus === 'Completed' ? 'is complete' : 'was declined'}`,
+          heading: `Your ${eventLabel} ${nextStatus === 'Completed' ? 'is complete' : 'was declined'}`,
+          message: `Your ${eventLabel} ${action}.`,
+          details,
+        });
+      } else {
+        console.error(`Could not send ${eventLabel} status email: user ${transaction.user} was not found.`);
+      }
+    } catch (error) {
+      console.error(`Could not prepare ${transaction.eventType} status email for ${transaction._id}:`, error);
+    }
     return res.json({ success: true, data: toTransactionDto(transaction) });
   } catch (error) {
     console.error('Could not review transaction request:', error);
@@ -1419,7 +1508,7 @@ const listAllUsers = async (_req, res) => {
   try {
     const [users, investments] = await Promise.all([
       User.find({ role: 'investor' })
-        .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance totalInvested totalReturns returnsAdjustment role kycStatus avatar createdAt')
+        .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance withdrawalLimit totalInvested totalReturns returnsAdjustment role kycStatus avatar createdAt')
         .sort({ createdAt: -1 })
         .lean(),
       Investment.find().lean(),
@@ -1576,7 +1665,7 @@ const adjustInvestorBalance = async (req, res) => {
   if (!reason) return sendError(res, 400, 'A reason is required for balance adjustments.');
 
   try {
-    const investor = await User.findOne({ _id: req.params.id, role: 'investor' }).select('_id').lean();
+    const investor = await User.findOne({ _id: req.params.id, role: 'investor' }).select('_id firstName email').lean();
     if (!investor) return sendError(res, 404, 'Investor not found.');
 
     const delta = direction === 'credit' ? amount : -amount;
@@ -1606,6 +1695,16 @@ const adjustInvestorBalance = async (req, res) => {
     }
 
     await invalidateCache(req.redisClient, `user:${investor._id}`);
+    await sendAccountNotification(investor, {
+      subject: 'Your account balance was updated',
+      heading: 'Account balance adjustment',
+      message: `An administrator ${direction === 'credit' ? 'credited' : 'debited'} your account balance.`,
+      details: [
+        { label: 'Adjustment', value: `${direction === 'credit' ? '+' : '-'}$${amount.toFixed(2)}` },
+        { label: 'Reason', value: reason },
+        { label: 'Reference', value: transaction.reference },
+      ],
+    });
     const updatedInvestor = await User.findById(investor._id)
       .select('firstName lastName email phone country investorType targetCapital balance totalInvested totalReturns role kycStatus createdAt')
       .lean();
@@ -1624,7 +1723,7 @@ const getAdminUserDetail = async (req, res) => {
   try {
     const [user, transactions, investments] = await Promise.all([
       User.findById(req.params.id)
-        .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance totalInvested totalReturns returnsAdjustment role kycStatus avatar createdAt')
+        .select('firstName lastName email phone dob country streetAddress city state postalCode investorType targetCapital balance withdrawalLimit totalInvested totalReturns returnsAdjustment role kycStatus avatar createdAt')
         .lean(),
       Transaction.find({ user: req.params.id }).sort({ createdAt: -1 }).lean(),
       Investment.find({ user: req.params.id }).sort({ createdAt: -1 }).lean(),
@@ -1665,6 +1764,11 @@ const updateInvestor = async (req, res) => {
     if (!Number.isFinite(value) || value < 0) return sendError(res, 400, `${field} must be a non-negative number.`);
     updates[field] = value;
   }
+  if (req.body.withdrawalLimit !== undefined) {
+    const value = Number(req.body.withdrawalLimit);
+    if (!Number.isFinite(value) || value < 0) return sendError(res, 400, 'withdrawalLimit must be a non-negative number.');
+    updates.withdrawalLimit = value;
+  }
   if (req.body.dob !== undefined) {
     const dob = new Date(req.body.dob);
     if (Number.isNaN(dob.getTime())) return sendError(res, 400, 'Date of birth is invalid.');
@@ -1678,6 +1782,8 @@ const updateInvestor = async (req, res) => {
   try {
     const investor = await User.findOne({ _id: req.params.id, role: 'investor' });
     if (!investor) return sendError(res, 404, 'Investor not found.');
+    const previousKycStatus = investor.kycStatus;
+    const previousWithdrawalLimit = getWithdrawalLimit(investor);
 
     if (updates.totalReturns !== undefined) {
       const activeInvestments = await Investment.find({ user: investor._id }).lean();
@@ -1688,6 +1794,24 @@ const updateInvestor = async (req, res) => {
     Object.assign(investor, updates);
     await investor.save();
     await invalidateCache(req.redisClient, `user:${investor._id}`);
+    if (updates.kycStatus && updates.kycStatus !== previousKycStatus) {
+      await sendAccountNotification(investor, {
+        subject: 'Your identity verification status changed',
+        heading: 'Identity verification update',
+        message: `Your identity verification status is now ${investor.kycStatus}.`,
+      });
+    }
+    if (getWithdrawalLimit(investor) !== previousWithdrawalLimit) {
+      await sendAccountNotification(investor, {
+        subject: 'Your withdrawal limit was updated',
+        heading: 'Withdrawal limit update',
+        message: 'An administrator updated your rolling 24-hour withdrawal limit.',
+        details: [
+          { label: 'Previous limit', value: `$${previousWithdrawalLimit.toFixed(2)}` },
+          { label: 'New limit', value: `$${getWithdrawalLimit(investor).toFixed(2)}` },
+        ],
+      });
+    }
 
     const responseUser = investor.toObject();
     delete responseUser.password;
